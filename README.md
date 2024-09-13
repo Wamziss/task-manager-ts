@@ -30,7 +30,7 @@ Here's how to get this project up and running on your machine:
 
 1. Clone this repository:
    ```
-   git clone https://github.com/your-username/decentralized-task-manager.git
+   git clone https://github.com/Wamziss/task-manager-ts.git
    cd decentralized-task-manager
    ```
 
@@ -51,7 +51,7 @@ Here's how to get this project up and running on your machine:
 
 ### Using the Task Manager
 
-After deploying, you'll see some URLs in your terminal. The one you want starts with `http://localhost:`. Open that in your web browser to start using the task manager!
+After deploying, you'll see some URLs in your terminal. The url to use starts with `http://localhost:`. Open that in your web browser to start using the task manager!
 
 ## How It Works
 
