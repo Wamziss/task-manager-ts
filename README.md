@@ -31,7 +31,7 @@ Here's how to get this project up and running on your machine:
 1. Clone this repository:
    ```
    git clone https://github.com/Wamziss/task-manager-ts.git
-   cd decentralized-task-manager
+   cd task-manager-ts
    ```
 
 2. Install the project dependencies:
