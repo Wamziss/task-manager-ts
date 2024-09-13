@@ -18,6 +18,13 @@
             "content": "azle"
         }
     ]
+    },
+    "build": {
+                "type": "custom",
+                "main": "src/index.ts",
+                "build": "npx azle build",
+                "candid": "src/index.did",
+                "wasm": ".azle/build/build.wasm"
     }
   }
 }
