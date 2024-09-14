@@ -49,65 +49,264 @@ export default Server(() => {
 
     // Create a new task
     app.post("/tasks", (req, res) => {
+    try {
         const caller = ic.caller();
+        
+        // Validate title and description
+        if (!req.body.title || typeof req.body.title !== 'string' || req.body.title.trim() === "") {
+            return res.status(400).send("Task title is required and must be a valid string.");
+        }
+        if (!req.body.description || typeof req.body.description !== 'string' || req.body.description.trim() === "") {
+            return res.status(400).send("Task description is required and must be a valid string.");
+        }
+
+        // Validate priority
+        const validPriorities = Object.values(TaskPriority);
+        if (req.body.priority && !validPriorities.includes(req.body.priority)) {
+            return res.status(400).send("Invalid task priority.");
+        }
+
+        // Validate assignee if provided
+        let assignee: Opt<UserId> = { None: null };
+        if (req.body.assignee) {
+            try {
+                assignee = { Some: Principal.fromText(req.body.assignee) };
+            } catch (error) {
+                return res.status(400).send("Invalid assignee principal ID.");
+            }
+        }
+
+        // Validate due date if provided
+        let dueDate: Opt<Date> = { None: null };
+        if (req.body.dueDate) {
+            const dueDateObj = new Date(req.body.dueDate);
+            if (isNaN(dueDateObj.getTime())) {
+                return res.status(400).send("Invalid due date format.");
+            }
+            dueDate = { Some: dueDateObj };
+        }
+
+        // Create task object
         const task: Task = {
             id: uuidv4(),
             title: req.body.title,
             description: req.body.description,
             status: TaskStatus.Pending,
             priority: req.body.priority || TaskPriority.Medium,
-            assignee: req.body.assignee ? { Some: Principal.fromText(req.body.assignee) } : { None: null },
-            dueDate: req.body.dueDate ? { Some: new Date(req.body.dueDate) } : { None: null },
+            assignee: assignee,
+            dueDate: dueDate,
             createdAt: getCurrentDate(),
             updatedAt: getCurrentDate(),
             comments: []
         };
-        tasksStorage.insert(task.id, task);
-        addTaskToUser(caller, task.id);
-        res.json(task);
-    });
+
+        // Insert task into storage
+        const insertResult = tasksStorage.insert(task.id, task);
+        if (!insertResult) {
+            return res.status(500).send("Failed to create task.");
+        }
+
+        // Add task to the user's task list
+        const addTaskResult = addTaskToUser(caller, task.id);
+        if (!addTaskResult) {
+            tasksStorage.remove(task.id); // Rollback if task-to-user association fails
+            return res.status(500).send("Failed to associate task with the user.");
+        }
+
+        res.status(201).json(task);
+
+    } catch (error) {
+        console.error("Error creating task:", error);
+        res.status(500).send("An unexpected error occurred.");
+    }
+});
+
 
     // Get all tasks for the caller
     app.get("/tasks", (req, res) => {
+    try {
         const caller = ic.caller();
         const userTasks = getUserTasks(caller);
-        const tasks = userTasks.map(taskId => tasksStorage.get(taskId).Some);
-        res.json(tasks);
-    });
+
+        // Handle the case where the user has no tasks
+        if (userTasks.length === 0) {
+            return res.status(200).json([]); // Return an empty array if no tasks
+        }
+
+        // Retrieve tasks, handle errors, and filter task data
+        const tasks = userTasks
+            .map(taskId => {
+                const taskOpt = tasksStorage.get(taskId);
+                if ("None" in taskOpt) {
+                    console.warn(`Task with id=${taskId} not found in storage.`);
+                    return null;
+                }
+                return taskOpt.Some;
+            })
+            .filter((task): task is Task => task !== null) // Filter out any null results
+            .map(task => ({
+                id: task.id,
+                title: task.title,
+                status: task.status,
+                priority: task.priority,
+                assignee: task.assignee.Some || null,  // Return assignee if exists
+                dueDate: task.dueDate.Some || null,    // Return due date if exists
+                createdAt: task.createdAt,
+                updatedAt: task.updatedAt
+            }));
+
+        res.status(200).json(tasks);
+    } catch (error) {
+        console.error("Error fetching tasks:", error);
+        res.status(500).send("An unexpected error occurred while fetching tasks.");
+    }
+});
+
 
     // Get a specific task
     app.get("/tasks/:id", (req, res) => {
+    try {
         const taskId = req.params.id;
+        const caller = ic.caller();
+
+        // Retrieve the task from storage
         const taskOpt = tasksStorage.get(taskId);
         if ("None" in taskOpt) {
-            res.status(404).send(`Task with id=${taskId} not found`);
-        } else {
-            res.json(taskOpt.Some);
+            return res.status(404).send(`Task with id=${taskId} not found.`);
         }
-    });
+
+        const task = taskOpt.Some;
+
+        // Authorization check: ensure the caller is the task creator or assignee
+        const userTasks = getUserTasks(caller);
+        const isAuthorizedUser = userTasks.includes(taskId) || 
+                                 ("Some" in task.assignee && task.assignee.Some === caller);
+
+        if (!isAuthorizedUser) {
+            return res.status(403).send("You are not authorized to access this task.");
+        }
+
+        // Return only necessary fields
+        const filteredTask = {
+            id: task.id,
+            title: task.title,
+            description: task.description,   // Include description if required
+            status: task.status,
+            priority: task.priority,
+            assignee: task.assignee.Some || null,
+            dueDate: task.dueDate.Some || null,
+            createdAt: task.createdAt,
+            updatedAt: task.updatedAt,
+            comments: task.comments.map(comment => ({
+                id: comment.id,
+                content: comment.content,
+                author: comment.author,
+                createdAt: comment.createdAt
+            }))
+        };
+
+        res.status(200).json(filteredTask);
+    } catch (error) {
+        console.error("Error fetching task:", error);
+        res.status(500).send("An unexpected error occurred while fetching the task.");
+    }
+});
+
 
     // Update a task
     app.put("/tasks/:id", (req, res) => {
+    try {
         const taskId = req.params.id;
+        const caller = ic.caller();
+
+        // Retrieve the task from storage
         const taskOpt = tasksStorage.get(taskId);
         if ("None" in taskOpt) {
-            res.status(404).send(`Task with id=${taskId} not found`);
-        } else {
-            const task = taskOpt.Some;
-            const updatedTask: Task = {
-                ...task,
-                title: req.body.title || task.title,
-                description: req.body.description || task.description,
-                status: req.body.status || task.status,
-                priority: req.body.priority || task.priority,
-                assignee: req.body.assignee ? { Some: Principal.fromText(req.body.assignee) } : task.assignee,
-                dueDate: req.body.dueDate ? { Some: new Date(req.body.dueDate) } : task.dueDate,
-                updatedAt: getCurrentDate()
-            };
-            tasksStorage.insert(taskId, updatedTask);
-            res.json(updatedTask);
+            return res.status(404).send(`Task with id=${taskId} not found.`);
         }
-    });
+
+        const task = taskOpt.Some;
+
+        // Authorization check: ensure the caller is either the task creator or the assignee
+        const userTasks = getUserTasks(caller);
+        const isAuthorizedUser = userTasks.includes(taskId) || 
+                                 ("Some" in task.assignee && task.assignee.Some === caller);
+
+        if (!isAuthorizedUser) {
+            return res.status(403).send("You are not authorized to update this task.");
+        }
+
+        // Input validation
+        if (req.body.title && (typeof req.body.title !== 'string' || req.body.title.trim() === "")) {
+            return res.status(400).send("Task title must be a non-empty string.");
+        }
+        if (req.body.description && (typeof req.body.description !== 'string' || req.body.description.trim() === "")) {
+            return res.status(400).send("Task description must be a non-empty string.");
+        }
+
+        const validStatuses = Object.values(TaskStatus);
+        if (req.body.status && !validStatuses.includes(req.body.status)) {
+            return res.status(400).send("Invalid task status.");
+        }
+
+        const validPriorities = Object.values(TaskPriority);
+        if (req.body.priority && !validPriorities.includes(req.body.priority)) {
+            return res.status(400).send("Invalid task priority.");
+        }
+
+        let assignee = task.assignee;
+        if (req.body.assignee) {
+            try {
+                assignee = { Some: Principal.fromText(req.body.assignee) };
+            } catch (error) {
+                return res.status(400).send("Invalid assignee principal ID.");
+            }
+        }
+
+        let dueDate = task.dueDate;
+        if (req.body.dueDate) {
+            const dueDateObj = new Date(req.body.dueDate);
+            if (isNaN(dueDateObj.getTime())) {
+                return res.status(400).send("Invalid due date format.");
+            }
+            dueDate = { Some: dueDateObj };
+        }
+
+        // Create the updated task object
+        const updatedTask: Task = {
+            ...task,
+            title: req.body.title || task.title,
+            description: req.body.description || task.description,
+            status: req.body.status || task.status,
+            priority: req.body.priority || task.priority,
+            assignee: assignee,
+            dueDate: dueDate,
+            updatedAt: getCurrentDate()  // Update the last updated timestamp
+        };
+
+        // Attempt to update the task in storage
+        const insertResult = tasksStorage.insert(taskId, updatedTask);
+        if (!insertResult) {
+            return res.status(500).send("Failed to update task.");
+        }
+
+        res.status(200).json({
+            id: updatedTask.id,
+            title: updatedTask.title,
+            description: updatedTask.description,
+            status: updatedTask.status,
+            priority: updatedTask.priority,
+            assignee: updatedTask.assignee.Some || null,
+            dueDate: updatedTask.dueDate.Some || null,
+            createdAt: updatedTask.createdAt,
+            updatedAt: updatedTask.updatedAt
+        });
+    } catch (error) {
+        console.error("Error updating task:", error);
+        res.status(500).send("An unexpected error occurred while updating the task.");
+    }
+});
+    
 
     // Delete a task
     app.delete("/tasks/:id", (req, res) => {
