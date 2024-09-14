@@ -400,12 +400,19 @@ function getCurrentDate(): Date {
     return new Date(Number(timestamp / BigInt(1_000_000)));
 }
 
-function addTaskToUser(userId: UserId, taskId: TaskId): void {
+function addTaskToUser(userId: UserId, taskId: TaskId): boolean {
     const userTasksOpt = userTasksStorage.get(userId);
     const userTasks = "None" in userTasksOpt ? [] : userTasksOpt.Some;
     userTasks.push(taskId);
-    userTasksStorage.insert(userId, userTasks);
+    const insertResult = userTasksStorage.insert(userId, userTasks);
+
+    // Check if insertion was successful
+    if (!insertResult) {
+        return false;
+    }
+    return true;
 }
+
 
 function removeTaskFromUser(userId: UserId, taskId: TaskId): void {
     const userTasksOpt = userTasksStorage.get(userId);
