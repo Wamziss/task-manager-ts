@@ -6,7 +6,6 @@ import express from 'express';
 type TaskId = string;
 type UserId = Principal;
 
-
 enum TaskStatus {
     Pending = 'pending',
     InProgress = 'in_progress',
@@ -121,7 +120,6 @@ export default Server(() => {
     }
 });
 
-
     // Get all tasks for the caller
     app.get("/tasks", (req, res) => {
     try {
@@ -161,7 +159,6 @@ export default Server(() => {
         res.status(500).send("An unexpected error occurred while fetching tasks.");
     }
 });
-
 
     // Get a specific task
     app.get("/tasks/:id", (req, res) => {
@@ -211,7 +208,6 @@ export default Server(() => {
         res.status(500).send("An unexpected error occurred while fetching the task.");
     }
 });
-
 
     // Update a task
     app.put("/tasks/:id", (req, res) => {
@@ -306,43 +302,97 @@ export default Server(() => {
         res.status(500).send("An unexpected error occurred while updating the task.");
     }
 });
-    
 
     // Delete a task
     app.delete("/tasks/:id", (req, res) => {
+        try {
         const taskId = req.params.id;
+            const caller = ic.caller();
+
+            // Retrieve the task from storage
+            const taskOpt = tasksStorage.get(taskId);
+            if ("None" in taskOpt) {
+                return res.status(404).send(`Task with id=${taskId} not found.`);
+            }
+
+            const task = taskOpt.Some;
+
+            // Authorization check: ensure the caller is either the task creator or the assignee
+            const userTasks = getUserTasks(caller);
+            const isAuthorizedUser = userTasks.includes(taskId) ||
+                ("Some" in task.assignee && task.assignee.Some === caller);
+
+            if (!isAuthorizedUser) {
+                return res.status(403).send("You are not authorized to delete this task.");
+            }
+
+            // Remove the task from storage
         const deletedTask = tasksStorage.remove(taskId);
         if ("None" in deletedTask) {
-            res.status(404).send(`Task with id=${taskId} not found`);
-        } else {
-            removeTaskFromUser(ic.caller(), taskId);
+                return res.status(404).send(`Task with id=${taskId} not found`);
+            }
+
+            // Remove the task from the user's task list
+            removeTaskFromUser(caller, taskId);
+
             res.json(deletedTask.Some);
+        } catch (error) {
+            console.error("Error deleting task:", error);
+            res.status(500).send("An unexpected error occurred while deleting the task.");
         }
     });
 
     // Add a comment to a task
     app.post("/tasks/:id/comments", (req, res) => {
+        try {
         const taskId = req.params.id;
+            const caller = ic.caller();
+
+            // Retrieve the task from storage
         const taskOpt = tasksStorage.get(taskId);
         if ("None" in taskOpt) {
-            res.status(404).send(`Task with id=${taskId} not found`);
-        } else {
+                return res.status(404).send(`Task with id=${taskId} not found`);
+            }
+
             const task = taskOpt.Some;
+
+            // Authorization check: ensure the caller is either the task creator or the assignee
+            const userTasks = getUserTasks(caller);
+            const isAuthorizedUser = userTasks.includes(taskId) ||
+                ("Some" in task.assignee && task.assignee.Some === caller);
+
+            if (!isAuthorizedUser) {
+                return res.status(403).send("You are not authorized to add a comment to this task.");
+            }
+
+            // Validate comment content
+            if (!req.body.content || typeof req.body.content !== 'string' || req.body.content.trim() === "") {
+                return res.status(400).send("Comment content is required and must be a valid string.");
+            }
+
+            // Create comment object
             const comment: Comment = {
                 id: uuidv4(),
                 content: req.body.content,
-                author: ic.caller(),
+                author: caller,
                 createdAt: getCurrentDate()
             };
+
+            // Add comment to the task
             task.comments.push(comment);
             task.updatedAt = getCurrentDate();
             tasksStorage.insert(taskId, task);
-            res.json(comment);
+
+            res.status(201).json(comment);
+        } catch (error) {
+            console.error("Error adding comment:", error);
+            res.status(500).send("An unexpected error occurred while adding the comment.");
         }
     });
 
-
-    app.get("/tasks/search", (req: any, res: any) => {
+    // Search tasks
+    app.get("/tasks/search", (req, res) => {
+        try {
         const caller = ic.caller();
         const userTasks = getUserTasks(caller);
         let filteredTasks = userTasks
@@ -364,10 +414,15 @@ export default Server(() => {
         }
     
         res.json(filteredTasks);
+        } catch (error) {
+            console.error("Error searching tasks:", error);
+            res.status(500).send("An unexpected error occurred while searching tasks.");
+        }
     });
     
     // Generate task statistics
-    app.get("/tasks/stats", (req: any, res: any) => {
+    app.get("/tasks/stats", (req, res) => {
+        try {
         const caller = ic.caller();
         const userTasks = getUserTasks(caller);
         const tasks = userTasks
@@ -389,6 +444,10 @@ export default Server(() => {
         };
     
         res.json(stats);
+        } catch (error) {
+            console.error("Error generating task statistics:", error);
+            res.status(500).send("An unexpected error occurred while generating task statistics.");
+        }
     });
 
     return app.listen();
@@ -412,7 +471,6 @@ function addTaskToUser(userId: UserId, taskId: TaskId): boolean {
     }
     return true;
 }
-
 
 function removeTaskFromUser(userId: UserId, taskId: TaskId): void {
     const userTasksOpt = userTasksStorage.get(userId);
